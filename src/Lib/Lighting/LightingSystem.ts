@@ -169,7 +169,7 @@ export class LightingSystem extends System {
   // Run after Excalibur's built-in draw systems (they top out around 200)
   readonly priority = 900;
 
-  private darknessQuery!: Query<typeof DarknessComponent>;
+  // private darknessQuery!: Query<typeof DarknessComponent>;
   private ambientQuery!: Query<typeof AmbientLightComponent>;
   private darknessXfQuery!: Query<typeof DarknessComponent | typeof TransformComponent>;
 
@@ -191,7 +191,7 @@ export class LightingSystem extends System {
 
   initialize(world: World, scene: Scene): void {
     this.engine = scene.engine;
-    this.darknessQuery = world.query([DarknessComponent]);
+    // this.darknessQuery = world.query([DarknessComponent]);
     this.ambientQuery = world.query([AmbientLightComponent]);
     this.darknessXfQuery = world.query([DarknessComponent, TransformComponent]);
 
@@ -537,6 +537,21 @@ export class LightingSystem extends System {
       ctx.fill();
       ctx.restore();
     }
+  }
+
+  public cleanup() {
+    const engine = this.engine;
+    const camera = engine.currentScene.camera;
+    const w = this.overlay.width;
+    const h = this.overlay.height;
+    const ctx = this.overlayCtx;
+
+    const pixelRatio = engine.screen.pixelRatio;
+    const zoom = camera.zoom;
+    const effectiveZoom = zoom * pixelRatio;
+
+    // Clear previous frames completely
+    ctx.clearRect(0, 0, w, h);
   }
 
   // ------------------------------------------------------------------------

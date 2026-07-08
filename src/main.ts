@@ -2,35 +2,22 @@
 import { Crate, Lamp, Player, Room } from "./Actors/actors";
 import { FlickerSystem, LightingSystem } from "./Lib/Lighting/";
 import { loader } from "./resources";
+import { LightingScene } from "./Scenes/lightingScene";
+import { TestScene } from "./Scenes/testScene";
 import "./style.css";
 
-import { Engine, DisplayMode, vec } from "excalibur";
+import { Engine, DisplayMode, vec, Vector } from "excalibur";
 
 const game = new Engine({
   width: 800, // the width of the canvas
   height: 600, // the height of the canvas
   displayMode: DisplayMode.Fixed, // the display mode
   pixelArt: true,
+  scenes: {
+    light: new LightingScene(),
+    test: new TestScene(),
+  },
 });
 
 await game.start(loader);
-
-let scene = game.currentScene;
-
-//Room 1 stuff
-game.add(new Room(vec(0, 0)));
-game.add(new Lamp(vec(150, -100)));
-game.add(new Crate(vec(100, 100)));
-game.add(new Crate(vec(-100, 150)));
-game.add(new Crate(vec(0, -140)));
-game.add(new Crate(vec(0, 150)));
-
-//Room2 stuff
-game.add(new Room(vec(900, 0)));
-
-//Player
-game.add(new Player(vec(925, -100)));
-
-scene.world.add(FlickerSystem);
-scene.world.add(LightingSystem);
-scene.camera.zoom = 0.5;
+game.goToScene("light");

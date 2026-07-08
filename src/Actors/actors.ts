@@ -41,7 +41,7 @@ export class Room extends Actor {
   }
 
   onInitialize(engine: Engine): void {
-    engine.currentScene.camera.strategy.lockToActor(this);
+    // engine.currentScene.camera.strategy.lockToActor(this);
   }
 }
 export class Crate extends Actor {
