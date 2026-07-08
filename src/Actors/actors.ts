@@ -11,11 +11,11 @@ export class Room extends Actor {
   ambient: AmbientLightComponent;
   // fog: FogActor;
 
-  constructor() {
+  constructor(pos: Vector) {
     super({
       width: 736,
       height: 461,
-      pos: Vector.Zero,
+      pos,
     });
     // this.fog = new FogActor({
     //   fogWidth: 736,

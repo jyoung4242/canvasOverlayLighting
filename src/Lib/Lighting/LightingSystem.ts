@@ -184,7 +184,6 @@ export class LightingSystem extends System {
 
   private offscreen: HTMLCanvasElement | null = null;
   private offscreenCTX: CanvasRenderingContext2D | null = null;
-
   private resizeObserver: ResizeObserver | null = null;
 
   /** World-space radius beyond the camera bounds within which lights are culled */
@@ -262,76 +261,64 @@ export class LightingSystem extends System {
     const h = this.overlay.height;
     const ctx = this.overlayCtx;
 
-    // Physical buffer pixels can be pixelRatio× the logical resolution on
-    // HiDPI displays. Excalibur's own renderer accounts for this
-    // automatically; since this system draws to its own overlay canvas
-    // outside Excalibur's pipeline, every screen-space calculation below
-    // must fold this in explicitly or lights drift from their actors the
-    // further they get from camera center.
     const pixelRatio = engine.screen.pixelRatio;
     const zoom = camera.zoom;
     const effectiveZoom = zoom * pixelRatio;
 
+    // Clear previous frames completely
     ctx.clearRect(0, 0, w, h);
 
     // ------------------------------------------------------------------
-    // 1. Read darkness + ambient settings
+    // 1. Read ambient settings
     // ------------------------------------------------------------------
-    let darknessColor = Color.fromRGB(0, 0, 0);
-    let darknessIntensity = 0.85;
-    let ambientColor = Color.White;
     let ambientIntensity = 0.05;
-
-    for (const e of this.darknessQuery.entities) {
-      const d = e.get(DarknessComponent)!;
-      darknessColor = d.color;
-      darknessIntensity = d.intensity;
-    }
     for (const e of this.ambientQuery.entities) {
       const a = e.get(AmbientLightComponent)!;
-      ambientColor = a.color;
       ambientIntensity = a.intensity;
     }
 
     // ------------------------------------------------------------------
-    // 2. Compute darkness region clip (screen-space rect), then fill the
-    //    darkness veil constrained to that rect.
-    //    Without a clip the veil bleeds over the whole canvas including
-    //    areas outside the room actor.
+    // 2. Draw INDEPENDENT darkness rectangles & gather their bounds
     // ------------------------------------------------------------------
-    const camPos = camera.pos;
+    const roomClips: { x: number; y: number; w: number; h: number }[] = [];
 
-    let clipRect: { x: number; y: number; w: number; h: number } | null = null;
     for (const e of this.darknessXfQuery.entities) {
       const d = e.get(DarknessComponent)!;
       const xf = e.get(TransformComponent)!;
-      if (d.width === Infinity || d.height === Infinity) break; // unbounded — no clip
 
+      // Handle unbounded global darkness
+      if (d.width === Infinity || d.height === Infinity) {
+        const effectiveAlpha = Math.max(0, d.intensity - ambientIntensity);
+        ctx.fillStyle = colorToRgba(d.color, effectiveAlpha);
+        ctx.fillRect(0, 0, w, h);
+        continue;
+      }
+
+      // Compute individual room dimensions in screen space
       const hw = (d.width / 2) * effectiveZoom;
       const hh = (d.height / 2) * effectiveZoom;
       const center = worldToScreen(xf.pos, camera, w, h, pixelRatio);
-      clipRect = {
+
+      const rect = {
         x: center.x - hw,
         y: center.y - hh,
         w: hw * 2,
         h: hh * 2,
       };
-      break; // only one darkness actor expected
-    }
 
-    const effectiveAlpha = Math.max(0, darknessIntensity - ambientIntensity);
-    ctx.fillStyle = colorToRgba(darknessColor, effectiveAlpha);
-    if (clipRect) {
-      // Fill only the room bounds — outside stays transparent on the overlay
-      ctx.fillRect(clipRect.x, clipRect.y, clipRect.w, clipRect.h);
-    } else {
-      ctx.fillRect(0, 0, w, h);
+      // Keep track of this room for light isolation
+      roomClips.push(rect);
+
+      // Draw this independent darkness rectangle right here in the loop
+      const effectiveAlpha = Math.max(0, d.intensity - ambientIntensity);
+      ctx.fillStyle = colorToRgba(d.color, effectiveAlpha);
+      ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
     }
 
     // ------------------------------------------------------------------
-    // 3. Camera AABB for light culling (in world space — no pixelRatio
-    //    needed here, this stays entirely in world units)
+    // 3. Camera AABB for light culling
     // ------------------------------------------------------------------
+    const camPos = camera.pos;
     const halfW = w / 2 / effectiveZoom + this.cullPadding;
     const halfH = h / 2 / effectiveZoom + this.cullPadding;
     const camMinX = camPos.x - halfW;
@@ -344,8 +331,6 @@ export class LightingSystem extends System {
 
     // ------------------------------------------------------------------
     // 4. Collect visible occluders
-    //    Polygonal occluders store world-space vertex lists.
-    //    Circle occluders store world-space center + screen-space radius.
     // ------------------------------------------------------------------
     type PolyOccluder = { kind: "poly"; verts: Vector[] };
     type CircleOccluder = { kind: "circle"; center: Vector; radius: number };
@@ -357,7 +342,6 @@ export class LightingSystem extends System {
       if (!comp.castShadows) continue;
       const xf = e.get(TransformComponent)!;
       if (comp.shape.kind === "circle") {
-        // Circle radius scales with the actor's world transform (no rotation needed)
         occluders.push({
           kind: "circle",
           center: xf.pos,
@@ -371,63 +355,43 @@ export class LightingSystem extends System {
       }
     }
 
-    // Shadow reach: the full room diagonal so shadows always reach a wall.
-    // The clip rect ensures no bleed outside the room. Both w/h and
-    // clipRect are already in physical-buffer-pixel space, so no additional
-    // pixelRatio scaling is needed here.
-    const shadowReach = clipRect ? Math.sqrt(clipRect.w ** 2 + clipRect.h ** 2) : Math.sqrt(w ** 2 + h ** 2);
-
     // ------------------------------------------------------------------
-    // 5. Draw each visible light
-    //
-    // Each light is composited independently using an offscreen canvas.
-    // This isolates each light's hole + shadows so multiple lights don't
-    // corrupt each other's shadow geometry.
-    //
-    // Per light:
-    //   a) On the offscreen canvas, punch the light hole (destination-out)
-    //   b) Paint shadows back in (source-over) — they only affect this light
-    //   c) Composite the offscreen result onto the main overlay (source-over)
+    // 5. Draw each visible light restricted to its container room
     // ------------------------------------------------------------------
-
-    // drawLight isolates each light's contribution on the offscreen canvas:
-    //   - Start with fully transparent offscreen
-    //   - Paint the light shape (the "hole") in white, source-over
-    //   - Erase shadow areas with destination-out black shapes
-    //   - Composite the result onto the main overlay with destination-out:
-    //     white pixels (lit, no shadow) erase the darkness veil;
-    //     transparent pixels (shadow or outside light) leave the veil intact.
-    // Because each light is isolated to its own offscreen pass, shadows from
-    // light A cannot interfere with light B.
-
     const drawLight = (screenPos: Vector, screenRadius: number, alpha: number, drawShape: (c: CanvasRenderingContext2D) => void) => {
       if (!this.offscreenCTX || !this.offscreen) return;
       this.offscreenCTX.clearRect(0, 0, w, h);
 
-      if (clipRect) {
+      // Match this light to the room it is currently placed inside
+      const activeClip = roomClips.find(
+        rect => screenPos.x >= rect.x && screenPos.x <= rect.x + rect.w && screenPos.y >= rect.y && screenPos.y <= rect.y + rect.h,
+      );
+
+      // Restrict offscreen shadow punching to the room bounds
+      if (activeClip) {
         this.offscreenCTX.save();
         this.offscreenCTX.beginPath();
-        this.offscreenCTX.rect(clipRect.x, clipRect.y, clipRect.w, clipRect.h);
+        this.offscreenCTX.rect(activeClip.x, activeClip.y, activeClip.w, activeClip.h);
         this.offscreenCTX.clip();
       }
 
-      // a) Paint the lit area in opaque white onto the transparent offscreen
+      const shadowReach = activeClip ? Math.sqrt(activeClip.w ** 2 + activeClip.h ** 2) : Math.sqrt(w ** 2 + h ** 2);
+
+      // a) Paint light hole stencil
       this.offscreenCTX.globalCompositeOperation = "source-over";
       drawShape(this.offscreenCTX);
 
-      // b) Erase shadow areas — destination-out punches holes where shadows fall
+      // b) Mask shadows out
       this.offscreenCTX.globalCompositeOperation = "destination-out";
       this._drawOccluderShadows(this.offscreenCTX, screenPos, occluders, shadowReach, camera, w, h, pixelRatio);
 
-      if (clipRect) this.offscreenCTX.restore();
+      if (activeClip) this.offscreenCTX.restore();
 
-      // c) Composite onto the main overlay: destination-out erases the darkness
-      //    veil wherever the offscreen has white (lit pixels). Shadow holes in
-      //    the offscreen are already transparent so the veil is left intact there.
+      // c) Punch out the final mask on the main overlay, respecting room lines
       ctx.save();
-      if (clipRect) {
+      if (activeClip) {
         ctx.beginPath();
-        ctx.rect(clipRect.x, clipRect.y, clipRect.w, clipRect.h);
+        ctx.rect(activeClip.x, activeClip.y, activeClip.w, activeClip.h);
         ctx.clip();
       }
       ctx.globalCompositeOperation = "destination-out";
@@ -500,26 +464,27 @@ export class LightingSystem extends System {
     }
 
     // ------------------------------------------------------------------
-    // 6. Colored light tint pass
-    //    Lights punch a hole in the darkness but that hole is white.
-    //    We then overlay a colored radial at low alpha (source-over)
-    //    to tint the light area with the light's color.
+    // 6. Colored light tint pass (Corrected for multi-room clips)
     // ------------------------------------------------------------------
-    ctx.save();
-    if (clipRect) {
-      ctx.beginPath();
-      ctx.rect(clipRect.x, clipRect.y, clipRect.w, clipRect.h);
-      ctx.clip();
-    }
-    ctx.globalCompositeOperation = "source-over";
-
     for (const e of this.pointXfQuery.entities) {
       const light = e.get(PointLightComponent)!;
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
-      if (light.color.equal(Color.White)) continue; // skip — no tint needed
+      if (light.color.equal(Color.White)) continue;
 
       const screenPos = worldToScreen(xf.pos, camera, w, h, pixelRatio);
+      const activeClip = roomClips.find(
+        rect => screenPos.x >= rect.x && screenPos.x <= rect.x + rect.w && screenPos.y >= rect.y && screenPos.y <= rect.y + rect.h,
+      );
+
+      ctx.save();
+      if (activeClip) {
+        ctx.beginPath();
+        ctx.rect(activeClip.x, activeClip.y, activeClip.w, activeClip.h);
+        ctx.clip();
+      }
+      ctx.globalCompositeOperation = "source-over";
+
       const screenRadius = light.radius * effectiveZoom;
       const tintAlpha = light.currentIntensity * 0.35;
 
@@ -532,6 +497,7 @@ export class LightingSystem extends System {
       ctx.beginPath();
       ctx.arc(screenPos.x, screenPos.y, screenRadius, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
     }
 
     for (const e of this.coneXfQuery.entities) {
@@ -541,6 +507,18 @@ export class LightingSystem extends System {
       if (light.color.equal(Color.White)) continue;
 
       const screenPos = worldToScreen(xf.pos, camera, w, h, pixelRatio);
+      const activeClip = roomClips.find(
+        rect => screenPos.x >= rect.x && screenPos.x <= rect.x + rect.w && screenPos.y >= rect.y && screenPos.y <= rect.y + rect.h,
+      );
+
+      ctx.save();
+      if (activeClip) {
+        ctx.beginPath();
+        ctx.rect(activeClip.x, activeClip.y, activeClip.w, activeClip.h);
+        ctx.clip();
+      }
+      ctx.globalCompositeOperation = "source-over";
+
       const screenRadius = light.radius * effectiveZoom;
       const tintAlpha = light.currentIntensity * 0.35;
       const halfAngle = light.angle / 2;
@@ -557,9 +535,8 @@ export class LightingSystem extends System {
       ctx.arc(screenPos.x, screenPos.y, screenRadius, dir - halfAngle, dir + halfAngle);
       ctx.closePath();
       ctx.fill();
+      ctx.restore();
     }
-
-    ctx.restore();
   }
 
   // ------------------------------------------------------------------------
