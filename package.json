@@ -1,0 +1,30 @@
+{
+  "name": "canvasoverlaylighting",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "lint": "eslint \"**/*.{ts,tsx,js}\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@typescript-eslint/eslint-plugin": "^8.58.1",
+    "@typescript-eslint/parser": "^8.58.1",
+    "eslint": "^10.2.0",
+    "json": "^11.0.0",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.8"
+  },
+  "dependencies": {
+    "@excaliburjs/plugin-perlin": "^0.32.0",
+    "excalibur": "^0.33.0-alpha.102"
+  }
+}
