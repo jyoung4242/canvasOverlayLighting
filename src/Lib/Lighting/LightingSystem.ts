@@ -441,6 +441,7 @@ export class LightingSystem extends System {
     }
 
     // --- Cone lights ---
+    // --- Cone lights ---
     for (const e of this.coneXfQuery.entities) {
       const light = e.get(ConeLightComponent)!;
       const xf = e.get(TransformComponent)!;
@@ -455,30 +456,21 @@ export class LightingSystem extends System {
       const endAngle = dir + halfAngle;
 
       drawLight(screenPos, screenRadius, alpha, c => {
+        // Determine where the light begins to fall off based on softness (e.g., 0.25 softness = starts fading at 75% radius)
+        const softEdgeStart = Math.max(0, 1 - light.softness);
+
         const grad = c.createRadialGradient(screenPos.x, screenPos.y, 0, screenPos.x, screenPos.y, screenRadius);
         grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
-        grad.addColorStop(0.7, `rgba(255,255,255,${alpha * 0.5})`);
-        grad.addColorStop(1, "rgba(255,255,255,0)");
+        grad.addColorStop(softEdgeStart * 0.7, `rgba(255,255,255,${alpha * 0.5})`);
+        grad.addColorStop(softEdgeStart, `rgba(255,255,255,${alpha * 0.2})`);
+        grad.addColorStop(1, "rgba(255,255,255,0)"); // Smooth falloff to the very tip of the radius bounds
+
         c.fillStyle = grad;
         c.beginPath();
         c.moveTo(screenPos.x, screenPos.y);
         c.arc(screenPos.x, screenPos.y, screenRadius, startAngle, endAngle);
         c.closePath();
         c.fill();
-
-        if (light.softness > 0) {
-          const featherGrad = c.createRadialGradient(screenPos.x, screenPos.y, 0, screenPos.x, screenPos.y, screenRadius);
-          featherGrad.addColorStop(0, "rgba(0,0,0,0)");
-          featherGrad.addColorStop(0.85, "rgba(0,0,0,0)");
-          featherGrad.addColorStop(1, `rgba(0,0,0,${alpha * light.softness})`);
-          c.globalCompositeOperation = "source-over";
-          c.fillStyle = featherGrad;
-          c.beginPath();
-          c.moveTo(screenPos.x, screenPos.y);
-          c.arc(screenPos.x, screenPos.y, screenRadius, startAngle - 0.15, endAngle + 0.15);
-          c.closePath();
-          c.fill();
-        }
       });
     }
 

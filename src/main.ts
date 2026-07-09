@@ -1,6 +1,5 @@
 // main.ts
-import { Crate, Lamp, Player, Room } from "./Actors/actors";
-import { FlickerSystem, LightingSystem } from "./Lib/Lighting/";
+
 import { loader } from "./resources";
 import { LightingScene } from "./Scenes/lightingScene";
 import { TestScene } from "./Scenes/testScene";

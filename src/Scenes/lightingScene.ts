@@ -4,6 +4,7 @@ import { FlickerSystem, LightingSystem } from "../Lib/Lighting";
 
 export class LightingScene extends Scene {
   lighting: LightingSystem | null = null;
+  player: Player | null = null;
 
   onInitialize(engine: Engine): void {
     //Room 1 stuff
@@ -18,7 +19,8 @@ export class LightingScene extends Scene {
     this.add(new Room(vec(900, 0)));
 
     //Player
-    this.add(new Player(vec(925, -100)));
+    this.player = new Player(vec(100, -100));
+    this.add(this.player);
 
     this.lighting = new LightingSystem({
       scene: this,
@@ -27,8 +29,7 @@ export class LightingScene extends Scene {
     });
     this.world.add(FlickerSystem);
     this.world.add(this.lighting);
-    this.camera.zoom = 0.5;
-    this.camera.pos = vec(925, 0);
+    this.camera.strategy.lockToActor(this.player);
   }
 
   onActivate(context: SceneActivationContext<unknown, undefined>): void {

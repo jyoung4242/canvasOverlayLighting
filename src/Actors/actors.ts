@@ -4,7 +4,6 @@ import { ConeLightComponent, DarknessComponent, LightOccluderComponent } from ".
 import { AmbientLightComponent } from "../Lib/Lighting/";
 import { PointLightComponent } from "../Lib/Lighting/";
 import { KeyboardControl } from "../Components/KeyboardControl";
-import { FogActor } from "./fogActor";
 
 export class Room extends Actor {
   darkness: DarknessComponent;
@@ -61,8 +60,8 @@ export class Lamp extends Actor {
     this.graphics.use(Resources.lamp.toSprite());
     this.pointLight = new PointLightComponent(
       Color.fromRGB(255, 200, 80), // warm yellow
-      0.45,
-      250,
+      0.35,
+      200,
       { speed: 2.5, amplitude: 0.08, secondarySpeed: 5.1 }, // subtle torch flicker
     );
     this.addComponent(this.pointLight);
@@ -82,7 +81,7 @@ export class Player extends Actor {
     this.ConeLight = new ConeLightComponent(
       Color.fromRGB(255, 200, 80), // warm yellow
       0.25,
-      325,
+      250,
       Math.PI / 4,
       (Math.PI * 3) / 2,
       0.25,
