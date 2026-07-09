@@ -1,17 +1,4 @@
-import {
-  System,
-  SystemType,
-  World,
-  Query,
-  Engine,
-  Scene,
-  Camera,
-  Vector,
-  Color,
-  TransformComponent,
-  ScreenElement,
-  Canvas,
-} from "excalibur";
+import { System, SystemType, World, Query, Engine, Scene, Vector, Color, TransformComponent, ScreenElement, Canvas } from "excalibur";
 import {
   DarknessComponent,
   AmbientLightComponent,
@@ -302,7 +289,11 @@ export class LightingSystem extends System {
     let ambientIntensity = 0.05;
     for (const e of this.ambientQuery.entities) {
       const a = e.get(AmbientLightComponent)!;
-      ambientIntensity = a.intensity;
+      if (a.enabled) {
+        ambientIntensity = a.intensity;
+      } else {
+        ambientIntensity = 0; // If ambient light component is disabled, floor it to absolute 0
+      }
     }
 
     // ------------------------------------------------------------------
@@ -421,6 +412,7 @@ export class LightingSystem extends System {
     // --- Point lights ---
     for (const e of this.pointXfQuery.entities) {
       const light = e.get(PointLightComponent)!;
+      if (!light.enabled) continue; // <-- ADDED
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
 
@@ -441,9 +433,9 @@ export class LightingSystem extends System {
     }
 
     // --- Cone lights ---
-    // --- Cone lights ---
     for (const e of this.coneXfQuery.entities) {
       const light = e.get(ConeLightComponent)!;
+      if (!light.enabled) continue; // <-- ADDED
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
 
@@ -479,6 +471,7 @@ export class LightingSystem extends System {
     // ------------------------------------------------------------------
     for (const e of this.pointXfQuery.entities) {
       const light = e.get(PointLightComponent)!;
+      if (!light.enabled) continue; // <-- ADDED
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
       if (light.color.equal(Color.White)) continue;
@@ -513,6 +506,7 @@ export class LightingSystem extends System {
 
     for (const e of this.coneXfQuery.entities) {
       const light = e.get(ConeLightComponent)!;
+      if (!light.enabled) continue; // <-- ADDED
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
       if (light.color.equal(Color.White)) continue;

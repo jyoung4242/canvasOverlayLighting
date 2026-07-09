@@ -1,4 +1,4 @@
-import { Actor, Color, Engine, vec, Vector } from "excalibur";
+import { Actor, Color, Engine, KeyEvent, Keys, vec, Vector } from "excalibur";
 import { Resources } from "../resources";
 import { ConeLightComponent, DarknessComponent, LightOccluderComponent } from "../Lib/Lighting/";
 import { AmbientLightComponent } from "../Lib/Lighting/";
@@ -100,6 +100,21 @@ export class Player extends Actor {
     this.addComponent(this.kc);
     this.kc.init(this);
     this.body.enableFixedUpdateInterpolate = false;
+  }
+
+  keyHandler = (evt: KeyEvent) => {
+    if (evt.key === Keys.Space) {
+      debugger;
+      this.ConeLight.enabled = !this.ConeLight.enabled;
+    }
+  };
+
+  onAdd(engine: Engine): void {
+    engine.input.keyboard.on("press", this.keyHandler);
+  }
+
+  onRemove(engine: Engine): void {
+    engine.input.keyboard.off("press", this.keyHandler);
   }
 
   onPostUpdate(engine: Engine, delta: number) {

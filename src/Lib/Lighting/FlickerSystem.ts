@@ -27,6 +27,13 @@ export class FlickerSystem extends System {
 
     for (const entity of this.pointQuery.entities) {
       const light = entity.get(PointLightComponent)!;
+
+      // If disabled, force intensity to 0 and skip flicker tracking
+      if (!light.enabled) {
+        light.currentIntensity = 0;
+        continue;
+      }
+
       if (!light.flicker) {
         light.currentIntensity = light.intensity;
         continue;
