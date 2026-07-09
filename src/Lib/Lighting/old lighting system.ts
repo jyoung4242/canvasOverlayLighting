@@ -1,17 +1,4 @@
-import {
-  System,
-  SystemType,
-  World,
-  Query,
-  Engine,
-  Scene,
-  Camera,
-  Vector,
-  Color,
-  TransformComponent,
-  ScreenElement,
-  Canvas,
-} from "excalibur";
+import { System, SystemType, World, Query, Engine, Scene, Camera, Vector, Color, TransformComponent } from "excalibur";
 import {
   DarknessComponent,
   AmbientLightComponent,
@@ -20,27 +7,35 @@ import {
   LightOccluderComponent,
 } from "./LightingComponents";
 
-export interface LightingSystemOptions {
-  /** The layer order. Z-index 100 sits nicely above game actors but below menus. */
-  zIndex?: number;
-  /** Optional custom position (defaults to Vector.Zero) */
-  pos?: Vector;
-  /** Optional custom dimensions. Defaults to the matching engine screen buffer width/height. */
-  size?: { width: number; height: number };
-  /** If you already have a ScreenElement managed elsewhere, pass it here to hook into it. */
-  screenElement?: ScreenElement;
-  engine: Engine;
-  scene: Scene;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Project a world-space Vector to screen/canvas-BUFFER-space pixels.
+ *
+ * `pixelRatio` must be included here because `canvasWidth`/`canvasHeight` are
+ * the physical drawing-buffer resolution (canvas.width/height), which on
+ * HiDPI displays is `pixelRatio`x larger than the logical resolution that
+ * `camera.zoom` operates in. Excalibur's own renderer folds this in
+ * automatically; since we're drawing to our own overlay canvas outside
+ * Excalibur's pipeline, we have to do it ourselves. Omitting it produces a
+ * screen position that's correct at the camera's exact focal point (error
+ * zero at distance zero) but increasingly wrong the further a light is from
+ * camera center — exactly the "actor outruns the light" symmetric drift.
+ */
+function worldToScreen(worldPos: Vector, camera: Camera, canvasWidth: number, canvasHeight: number, pixelRatio: number): Vector {
+  // Excalibur's camera transform: screen = (world - camPos) * zoom * pixelRatio + canvasCenter
+  const effectiveZoom = camera.zoom * pixelRatio;
+  const camPos = camera.pos;
+  const cx = canvasWidth / 2;
+  const cy = canvasHeight / 2;
+  return new Vector((worldPos.x - camPos.x) * effectiveZoom + cx, (worldPos.y - camPos.y) * effectiveZoom + cy);
 }
 
-// ---------------------------------------------------------------------------
-// Unified Screen Space & Coordinate Helpers (Leverages Engine Screen Math)
-// ---------------------------------------------------------------------------
-
-/** Project a world-space Vector to screen/canvas-space pixels correctly. */
-function worldToScreen(worldPos: Vector, engine: Engine): Vector {
-  // Leverages Excalibur's built-in viewport conversion matrix
-  return engine.screen.worldToScreenCoordinates(worldPos);
+/** Convert an Excalibur Color to a CSS rgba string with overridden alpha. */
+function colorToRgba(color: Color, alpha: number): string {
+  return `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
 }
 
 /** Transform local vertices to world space given world position and rotation. */
@@ -50,15 +45,28 @@ function localToWorld(vertices: Vector[], worldPos: Vector, rotation: number): V
   return vertices.map(v => new Vector(worldPos.x + v.x * cos - v.y * sin, worldPos.y + v.x * sin + v.y * cos));
 }
 
-/** Convert an Excalibur Color to a CSS rgba string with overridden alpha. */
-function colorToRgba(color: Color, alpha: number): string {
-  return `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
-}
+/**
+ * Compute a simple 2D shadow polygon from an occluder's world-space vertices
+ * against a light source. Returns screen-space polygon points ready for Canvas2D.
+ *
+ * Strategy: for each vertex, project a ray from the light through it to `reach`
+ * distance. The shadow polygon is the near face + the two projected far vertices,
+ * forming a quad (or fan) that blocks the light behind the occluder.
+ */
+function shadowPolygon(
+  lightScreen: Vector,
+  occluderVerts: Vector[], // world space
+  camera: Camera,
+  canvasWidth: number,
+  canvasHeight: number,
+  reach: number,
+  pixelRatio: number,
+): Vector[] {
+  // Project occluder vertices to screen space
+  const screenVerts = occluderVerts.map(v => worldToScreen(v, camera, canvasWidth, canvasHeight, pixelRatio));
 
-/** Compute a simple 2D shadow polygon from an occluder's world-space vertices against a light source. */
-function shadowPolygon(lightScreen: Vector, occluderVerts: Vector[], engine: Engine, reach: number): Vector[] {
-  const screenVerts = occluderVerts.map(v => worldToScreen(v, engine));
-
+  // Find the two "silhouette" vertices — the ones at the angular extremes
+  // relative to the light position.
   let minAngle = Infinity;
   let maxAngle = -Infinity;
   let minIdx = 0;
@@ -76,6 +84,7 @@ function shadowPolygon(lightScreen: Vector, occluderVerts: Vector[], engine: Eng
     }
   }
 
+  // Project the two silhouette verts far behind the occluder
   const project = (v: Vector): Vector => {
     const dx = v.x - lightScreen.x;
     const dy = v.y - lightScreen.y;
@@ -89,34 +98,46 @@ function shadowPolygon(lightScreen: Vector, occluderVerts: Vector[], engine: Eng
   return [screenVerts[minIdx], farMin, farMax, screenVerts[maxIdx]];
 }
 
-/** Compute the shadow wedge for a circular occluder. */
+/**
+ * Compute the shadow wedge for a circular occluder.
+ * Finds the two tangent points from the light to the circle edge, then
+ * draws a filled arc + projected trapezoid to block the light behind it.
+ */
 function drawShadowCircle(
   ctx: CanvasRenderingContext2D,
   lightScreen: Vector,
   centerWorld: Vector,
   worldRadius: number,
-  engine: Engine,
+  camera: Camera,
+  canvasWidth: number,
+  canvasHeight: number,
   reach: number,
   grad: CanvasGradient,
+  pixelRatio: number,
 ): void {
-  const center = worldToScreen(centerWorld, engine);
-  const screenRadius = worldRadius * engine.currentScene.camera.zoom;
+  const center = worldToScreen(centerWorld, camera, canvasWidth, canvasHeight, pixelRatio);
+  const effectiveZoom = camera.zoom * pixelRatio;
+  const screenRadius = worldRadius * effectiveZoom;
 
   const dx = center.x - lightScreen.x;
   const dy = center.y - lightScreen.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
 
+  // Light is inside the circle — no shadow
   if (dist <= screenRadius) return;
 
   const angleToCenter = Math.atan2(dy, dx);
+  // Half-angle of the tangent cone from the light
   const halfAngle = Math.asin(Math.min(1, screenRadius / dist));
 
   const t1 = angleToCenter - halfAngle;
   const t2 = angleToCenter + halfAngle;
 
+  // Tangent points on the circle edge (screen space)
   const tp1 = new Vector(center.x + Math.cos(t1 + Math.PI / 2) * screenRadius, center.y + Math.sin(t1 + Math.PI / 2) * screenRadius);
   const tp2 = new Vector(center.x + Math.cos(t2 - Math.PI / 2) * screenRadius, center.y + Math.sin(t2 - Math.PI / 2) * screenRadius);
 
+  // Project tangent points away from light to `reach`
   const project = (v: Vector): Vector => {
     const ex = v.x - lightScreen.x;
     const ey = v.y - lightScreen.y;
@@ -133,167 +154,118 @@ function drawShadowCircle(
   ctx.lineTo(far1.x, far1.y);
   ctx.lineTo(far2.x, far2.y);
   ctx.lineTo(tp2.x, tp2.y);
+  // Close around the back of the circle
   ctx.arc(center.x, center.y, screenRadius, t2 - Math.PI / 2, t1 + Math.PI / 2, true);
   ctx.closePath();
   ctx.fill();
 }
 
 // ---------------------------------------------------------------------------
-// LightingSystem Implementation
+// LightingSystem
 // ---------------------------------------------------------------------------
 
 export class LightingSystem extends System {
-  readonly systemType = SystemType.Update;
+  readonly systemType = SystemType.Draw;
+  // Run after Excalibur's built-in draw systems (they top out around 200)
+  readonly priority = 900;
 
-  private lightingEntity!: ScreenElement;
-  private lightingCanvas!: Canvas;
-  private options: LightingSystemOptions;
-  engine: Engine;
-  scene: Scene;
-
-  private cullPadding = 64;
-  private offscreen: HTMLCanvasElement | null = null;
-  private offscreenCTX: CanvasRenderingContext2D | null = null;
-
-  private darknessXfQuery!: Query<typeof DarknessComponent | typeof TransformComponent>;
+  // private darknessQuery!: Query<typeof DarknessComponent>;
   private ambientQuery!: Query<typeof AmbientLightComponent>;
+  private darknessXfQuery!: Query<typeof DarknessComponent | typeof TransformComponent>;
+
+  // Joined queries — give us typed pos/rotation without casting
   private pointXfQuery!: Query<typeof PointLightComponent | typeof TransformComponent>;
   private coneXfQuery!: Query<typeof ConeLightComponent | typeof TransformComponent>;
   private occluderXfQuery!: Query<typeof LightOccluderComponent | typeof TransformComponent>;
 
-  constructor(options: LightingSystemOptions) {
-    super();
-    this.engine = options.engine;
-    this.scene = options.scene;
-    this.options = options;
-  }
+  private overlay!: HTMLCanvasElement;
+  private overlayCtx!: CanvasRenderingContext2D;
+  private engine!: Engine;
+
+  private offscreen: HTMLCanvasElement | null = null;
+  private offscreenCTX: CanvasRenderingContext2D | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+
+  /** World-space radius beyond the camera bounds within which lights are culled */
+  cullPadding = 50;
 
   initialize(world: World, scene: Scene): void {
-    const engine = scene.engine;
-
-    this.darknessXfQuery = world.query([DarknessComponent, TransformComponent]);
+    this.engine = scene.engine;
+    // this.darknessQuery = world.query([DarknessComponent]);
     this.ambientQuery = world.query([AmbientLightComponent]);
+    this.darknessXfQuery = world.query([DarknessComponent, TransformComponent]);
+
     this.pointXfQuery = world.query([PointLightComponent, TransformComponent]);
     this.coneXfQuery = world.query([ConeLightComponent, TransformComponent]);
     this.occluderXfQuery = world.query([LightOccluderComponent, TransformComponent]);
 
-    this.offscreen = document.createElement("canvas");
-    this.offscreenCTX = this.offscreen.getContext("2d");
+    this._createOverlay();
+  }
 
-    const initialWidth = this.options.size?.width ?? engine.screen.drawWidth;
-    const initialHeight = this.options.size?.height ?? engine.screen.drawHeight;
+  private _syncOverlay(): void {
+    const canvas = this.engine.canvas;
 
-    this.offscreen.width = initialWidth;
-    this.offscreen.height = initialHeight;
+    // Match the canvas buffer resolution exactly
+    if (this.overlay.width !== canvas.width) this.overlay.width = canvas.width;
+    if (this.overlay.height !== canvas.height) this.overlay.height = canvas.height;
 
-    this.lightingCanvas = new Canvas({
-      width: initialWidth,
-      height: initialHeight,
-      draw: ctx => {
-        this._renderLightingCanvas(ctx);
-      },
-    });
+    // Position relative to offset parent — no viewport coordinate mismatch
+    this.overlay.style.position = "absolute";
+    this.overlay.style.left = `${canvas.offsetLeft}px`;
+    this.overlay.style.top = `${canvas.offsetTop}px`;
+    this.overlay.style.width = `${canvas.offsetWidth}px`;
+    this.overlay.style.height = `${canvas.offsetHeight}px`;
 
-    if (this.options.screenElement) {
-      this.lightingEntity = this.options.screenElement;
-    } else {
-      this.lightingEntity = new ScreenElement({
-        name: "lighting",
-        pos: this.options.pos ?? Vector.Zero,
-        width: initialWidth,
-        height: initialHeight,
-        z: this.options.zIndex ?? 100,
-        color: Color.Transparent,
-      });
-      scene.add(this.lightingEntity);
+    if (!this.offscreen) return;
+    // Must match overlay's *buffer* resolution (canvas.width/height), NOT
+    // canvas.offsetWidth/offsetHeight (CSS display size). update() computes
+    // all light/shadow screen-space coordinates against overlay.width/height,
+    // and drawImage() copies offscreen onto overlay at a straight 1:1 pixel
+    // scale with no stretching — if these sizes diverge (which they will
+    // whenever the canvas is CSS-scaled to fit its container, i.e. normally),
+    // the copied content lands at the wrong scale/position.
+    if (this.offscreen.width !== canvas.width) this.offscreen.width = canvas.width;
+    if (this.offscreen.height !== canvas.height) this.offscreen.height = canvas.height;
+  }
+
+  private _createOverlay(): void {
+    const canvas = this.engine.canvas;
+    const parent = canvas.parentElement!;
+
+    this.overlay = document.createElement("canvas");
+    this.overlay.style.cssText = `
+    pointer-events: none;
+    mix-blend-mode: multiply;
+  `;
+
+    if (getComputedStyle(parent).position === "static") {
+      parent.style.position = "relative";
     }
 
-    this.lightingEntity.graphics.use(this.lightingCanvas);
+    parent.appendChild(this.overlay);
+    this.overlayCtx = this.overlay.getContext("2d")!;
+
+    this.offscreen = document.createElement("canvas");
+    this.offscreenCTX = this.offscreen.getContext("2d")!;
+
+    // Sync once at creation, then only when the canvas actually resizes
+    this._syncOverlay();
+    this.resizeObserver = new ResizeObserver(() => this._syncOverlay());
+    this.resizeObserver.observe(canvas);
   }
 
   update(delta: number): void {
     const engine = this.engine;
+    const camera = engine.currentScene.camera;
+    const w = this.overlay.width;
+    const h = this.overlay.height;
+    const ctx = this.overlayCtx;
 
-    if (!this.options.size) {
-      if (this.lightingCanvas.width !== engine.screen.drawWidth || this.lightingCanvas.height !== engine.screen.drawHeight) {
-        const w = engine.screen.drawWidth;
-        const h = engine.screen.drawHeight;
+    const pixelRatio = engine.screen.pixelRatio;
+    const zoom = camera.zoom;
+    const effectiveZoom = zoom * pixelRatio;
 
-        this.lightingCanvas.width = w;
-        this.lightingCanvas.height = h;
-
-        // 2. Safely tell the ScreenElement's graphic compiler to match the dimensions
-        if (this.lightingEntity.graphics.current) {
-          this.lightingEntity.graphics.current.width = w;
-          this.lightingEntity.graphics.current.height = h;
-        }
-
-        if (this.offscreen) {
-          this.offscreen.width = w;
-          this.offscreen.height = h;
-        }
-      }
-    }
-
-    this.lightingCanvas.flagDirty();
-  }
-
-  private _drawOccluderShadows(
-    ctx: CanvasRenderingContext2D,
-    lightScreen: Vector,
-    occluders: any[],
-    reach: number,
-    w: number,
-    h: number,
-  ): void {
-    const camera = this.scene.camera;
-    for (const occ of occluders) {
-      if (occ.kind === "circle") {
-        const centerScreen = worldToScreen(occ.center, this.engine);
-        const dx = centerScreen.x - lightScreen.x;
-        const dy = centerScreen.y - lightScreen.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        const nearDist = Math.max(0, dist - occ.radius * camera.zoom);
-        const grad = ctx.createRadialGradient(lightScreen.x, lightScreen.y, nearDist, lightScreen.x, lightScreen.y, reach);
-        grad.addColorStop(0, "rgba(0,0,0,0.92)");
-        grad.addColorStop(0.4, "rgba(0,0,0,0.6)");
-        grad.addColorStop(1, "rgba(0,0,0,0)");
-
-        drawShadowCircle(ctx, lightScreen, occ.center, occ.radius, this.engine, reach, grad);
-      } else {
-        const poly = shadowPolygon(lightScreen, occ.verts, this.engine, reach);
-        if (poly.length < 3) continue;
-
-        const nearMidX = (poly[0].x + poly[3].x) / 2;
-        const nearMidY = (poly[0].y + poly[3].y) / 2;
-        const nearDist = Math.sqrt((nearMidX - lightScreen.x) ** 2 + (nearMidY - lightScreen.y) ** 2);
-
-        const grad = ctx.createRadialGradient(lightScreen.x, lightScreen.y, nearDist, lightScreen.x, lightScreen.y, reach);
-        grad.addColorStop(0, "rgba(0,0,0,0.92)");
-        grad.addColorStop(0.4, "rgba(0,0,0,0.6)");
-        grad.addColorStop(1, "rgba(0,0,0,0)");
-
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.moveTo(poly[0].x, poly[0].y);
-        for (let i = 1; i < poly.length; i++) {
-          ctx.lineTo(poly[i].x, poly[i].y);
-        }
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
-  }
-
-  private _renderLightingCanvas(ctx: CanvasRenderingContext2D): void {
-    const engine = this.engine;
-    const camera = this.scene.camera;
-
-    const w = this.lightingCanvas.width;
-    const h = this.lightingCanvas.height;
-    const effectiveZoom = camera.zoom;
-
+    // Clear previous frames completely
     ctx.clearRect(0, 0, w, h);
 
     // ------------------------------------------------------------------
@@ -314,6 +286,7 @@ export class LightingSystem extends System {
       const d = e.get(DarknessComponent)!;
       const xf = e.get(TransformComponent)!;
 
+      // Handle unbounded global darkness
       if (d.width === Infinity || d.height === Infinity) {
         const effectiveAlpha = Math.max(0, d.intensity - ambientIntensity);
         ctx.fillStyle = colorToRgba(d.color, effectiveAlpha);
@@ -321,9 +294,10 @@ export class LightingSystem extends System {
         continue;
       }
 
+      // Compute individual room dimensions in screen space
       const hw = (d.width / 2) * effectiveZoom;
       const hh = (d.height / 2) * effectiveZoom;
-      const center = worldToScreen(xf.pos, engine);
+      const center = worldToScreen(xf.pos, camera, w, h, pixelRatio);
 
       const rect = {
         x: center.x - hw,
@@ -332,8 +306,10 @@ export class LightingSystem extends System {
         h: hh * 2,
       };
 
+      // Keep track of this room for light isolation
       roomClips.push(rect);
 
+      // Draw this independent darkness rectangle right here in the loop
       const effectiveAlpha = Math.max(0, d.intensity - ambientIntensity);
       ctx.fillStyle = colorToRgba(d.color, effectiveAlpha);
       ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
@@ -386,10 +362,12 @@ export class LightingSystem extends System {
       if (!this.offscreenCTX || !this.offscreen) return;
       this.offscreenCTX.clearRect(0, 0, w, h);
 
+      // Match this light to the room it is currently placed inside
       const activeClip = roomClips.find(
         rect => screenPos.x >= rect.x && screenPos.x <= rect.x + rect.w && screenPos.y >= rect.y && screenPos.y <= rect.y + rect.h,
       );
 
+      // Restrict offscreen shadow punching to the room bounds
       if (activeClip) {
         this.offscreenCTX.save();
         this.offscreenCTX.beginPath();
@@ -399,14 +377,17 @@ export class LightingSystem extends System {
 
       const shadowReach = activeClip ? Math.sqrt(activeClip.w ** 2 + activeClip.h ** 2) : Math.sqrt(w ** 2 + h ** 2);
 
+      // a) Paint light hole stencil
       this.offscreenCTX.globalCompositeOperation = "source-over";
       drawShape(this.offscreenCTX);
 
+      // b) Mask shadows out
       this.offscreenCTX.globalCompositeOperation = "destination-out";
-      this._drawOccluderShadows(this.offscreenCTX, screenPos, occluders, shadowReach, w, h);
+      this._drawOccluderShadows(this.offscreenCTX, screenPos, occluders, shadowReach, camera, w, h, pixelRatio);
 
       if (activeClip) this.offscreenCTX.restore();
 
+      // c) Punch out the final mask on the main overlay, respecting room lines
       ctx.save();
       if (activeClip) {
         ctx.beginPath();
@@ -424,7 +405,7 @@ export class LightingSystem extends System {
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
 
-      const screenPos = worldToScreen(xf.pos, engine);
+      const screenPos = worldToScreen(xf.pos, camera, w, h, pixelRatio);
       const screenRadius = light.radius * effectiveZoom;
       const alpha = light.currentIntensity;
 
@@ -446,7 +427,7 @@ export class LightingSystem extends System {
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
 
-      const screenPos = worldToScreen(xf.pos, engine);
+      const screenPos = worldToScreen(xf.pos, camera, w, h, pixelRatio);
       const screenRadius = light.radius * effectiveZoom;
       const halfAngle = light.angle / 2;
       const dir = light.direction;
@@ -483,7 +464,7 @@ export class LightingSystem extends System {
     }
 
     // ------------------------------------------------------------------
-    // 6. Colored light tint pass
+    // 6. Colored light tint pass (Corrected for multi-room clips)
     // ------------------------------------------------------------------
     for (const e of this.pointXfQuery.entities) {
       const light = e.get(PointLightComponent)!;
@@ -491,7 +472,7 @@ export class LightingSystem extends System {
       if (!inCameraView(xf.pos, light.radius)) continue;
       if (light.color.equal(Color.White)) continue;
 
-      const screenPos = worldToScreen(xf.pos, engine);
+      const screenPos = worldToScreen(xf.pos, camera, w, h, pixelRatio);
       const activeClip = roomClips.find(
         rect => screenPos.x >= rect.x && screenPos.x <= rect.x + rect.w && screenPos.y >= rect.y && screenPos.y <= rect.y + rect.h,
       );
@@ -525,7 +506,7 @@ export class LightingSystem extends System {
       if (!inCameraView(xf.pos, light.radius)) continue;
       if (light.color.equal(Color.White)) continue;
 
-      const screenPos = worldToScreen(xf.pos, engine);
+      const screenPos = worldToScreen(xf.pos, camera, w, h, pixelRatio);
       const activeClip = roomClips.find(
         rect => screenPos.x >= rect.x && screenPos.x <= rect.x + rect.w && screenPos.y >= rect.y && screenPos.y <= rect.y + rect.h,
       );
@@ -556,5 +537,79 @@ export class LightingSystem extends System {
       ctx.fill();
       ctx.restore();
     }
+  }
+
+  public cleanup() {
+    const engine = this.engine;
+    const camera = engine.currentScene.camera;
+    const w = this.overlay.width;
+    const h = this.overlay.height;
+    const ctx = this.overlayCtx;
+
+    const pixelRatio = engine.screen.pixelRatio;
+    const zoom = camera.zoom;
+    const effectiveZoom = zoom * pixelRatio;
+
+    // Clear previous frames completely
+    ctx.clearRect(0, 0, w, h);
+  }
+
+  // ------------------------------------------------------------------------
+  // Shadow drawing — handles both polygon and circle occluders.
+  // Reach is always the room diagonal; clip rect prevents bleed.
+  // Radial gradient fades shadow from opaque near occluder to transparent.
+  // ------------------------------------------------------------------------
+  private _drawOccluderShadows(
+    ctx: CanvasRenderingContext2D,
+    lightScreen: Vector,
+    occluders: ({ kind: "poly"; verts: Vector[] } | { kind: "circle"; center: Vector; radius: number })[],
+    reach: number,
+    camera: Camera,
+    w: number,
+    h: number,
+    pixelRatio: number,
+  ): void {
+    for (const occ of occluders) {
+      if (occ.kind === "circle") {
+        // Build gradient from light outward through the circle
+        const center = worldToScreen(occ.center, camera, w, h, pixelRatio);
+        const dx = center.x - lightScreen.x;
+        const dy = center.y - lightScreen.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const nearDist = Math.max(0, dist - occ.radius * camera.zoom * pixelRatio);
+        const grad = ctx.createRadialGradient(lightScreen.x, lightScreen.y, nearDist, lightScreen.x, lightScreen.y, reach);
+        grad.addColorStop(0, "rgba(0,0,0,0.92)");
+        grad.addColorStop(0.4, "rgba(0,0,0,0.6)");
+        grad.addColorStop(1, "rgba(0,0,0,0)");
+        drawShadowCircle(ctx, lightScreen, occ.center, occ.radius, camera, w, h, reach, grad, pixelRatio);
+      } else {
+        const poly = shadowPolygon(lightScreen, occ.verts, camera, w, h, reach, pixelRatio);
+        if (poly.length < 3) continue;
+
+        const nearMidX = (poly[0].x + poly[3].x) / 2;
+        const nearMidY = (poly[0].y + poly[3].y) / 2;
+        const nearDist = Math.sqrt((nearMidX - lightScreen.x) ** 2 + (nearMidY - lightScreen.y) ** 2);
+
+        const grad = ctx.createRadialGradient(lightScreen.x, lightScreen.y, nearDist, lightScreen.x, lightScreen.y, reach);
+        grad.addColorStop(0, "rgba(0,0,0,0.92)");
+        grad.addColorStop(0.4, "rgba(0,0,0,0.6)");
+        grad.addColorStop(1, "rgba(0,0,0,0)");
+
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(poly[0].x, poly[0].y);
+        for (let i = 1; i < poly.length; i++) {
+          ctx.lineTo(poly[i].x, poly[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+  }
+
+  /** Call this when the scene is deactivated to remove the overlay DOM node. */
+  destroy(): void {
+    this.overlay.remove();
+    this.resizeObserver?.disconnect();
   }
 }

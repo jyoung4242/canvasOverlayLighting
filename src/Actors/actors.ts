@@ -17,14 +17,7 @@ export class Room extends Actor {
       height: 461,
       pos,
     });
-    // this.fog = new FogActor({
-    //   fogWidth: 736,
-    //   fogHeight: 461,
-    //   offset: vec(-736 / 2, -461 / 2),
-    //   scrollSpeedX: 15,
-    //   scrollSpeedY: 0,
-    // });
-    // this.addChild(this.fog);
+
     this.graphics.use(Resources.room.toSprite());
     this.darkness = new DarknessComponent(
       Color.fromRGB(5, 5, 20),
@@ -38,10 +31,6 @@ export class Room extends Actor {
     );
     this.addComponent(this.darkness);
     this.addComponent(this.ambient);
-  }
-
-  onInitialize(engine: Engine): void {
-    // engine.currentScene.camera.strategy.lockToActor(this);
   }
 }
 export class Crate extends Actor {

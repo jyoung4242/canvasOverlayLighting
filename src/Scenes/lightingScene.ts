@@ -20,7 +20,11 @@ export class LightingScene extends Scene {
     //Player
     this.add(new Player(vec(925, -100)));
 
-    this.lighting = new LightingSystem();
+    this.lighting = new LightingSystem({
+      scene: this,
+      engine: this.engine,
+      pos: vec(0, 0),
+    });
     this.world.add(FlickerSystem);
     this.world.add(this.lighting);
     this.camera.zoom = 0.5;
@@ -28,12 +32,10 @@ export class LightingScene extends Scene {
   }
 
   onActivate(context: SceneActivationContext<unknown, undefined>): void {
-    setTimeout(() => {
-      this.engine.goToScene("test");
-    }, 3000);
+    // setTimeout(() => {
+    //   this.engine.goToScene("test");
+    // }, 3000);
   }
 
-  onDeactivate(context: SceneActivationContext) {
-    this.lighting?.cleanup();
-  }
+  onDeactivate(context: SceneActivationContext) {}
 }
