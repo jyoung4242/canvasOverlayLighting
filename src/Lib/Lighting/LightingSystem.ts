@@ -8,41 +8,36 @@ import {
 } from "./LightingComponents";
 
 export interface LightingSystemOptions {
-  /** The layer order. Z-index 100 sits nicely above game actors but below menus. */
+  /** The composite canvas rendering stack z-index. Defaults to 100. */
   zIndex?: number;
-  /** Optional custom position (defaults to Vector.Zero) */
+  /** Fixed anchor screen positioning coordinate defaults to Vector.Zero. */
   pos?: Vector;
-  /** Optional custom dimensions. Defaults to the matching engine screen buffer width/height. */
+  /** Fixed resolution dimensions. Defaults to viewport screen dimensions when omitted. */
   size?: { width: number; height: number };
-  /** If you already have a ScreenElement managed elsewhere, pass it here to hook into it. */
+  /** Hook an external ScreenElement host rather than provisioning an independent one. */
   screenElement?: ScreenElement;
   engine: Engine;
   scene: Scene;
 }
 
-// ---------------------------------------------------------------------------
-// Unified Screen Space & Coordinate Helpers (Leverages Engine Screen Math)
-// ---------------------------------------------------------------------------
-
-/** Project a world-space Vector to screen/canvas-space pixels correctly. */
+/** Projects a world position into unified viewport screen space pixels. */
 function worldToScreen(worldPos: Vector, engine: Engine): Vector {
-  // Leverages Excalibur's built-in viewport conversion matrix
   return engine.screen.worldToScreenCoordinates(worldPos);
 }
 
-/** Transform local vertices to world space given world position and rotation. */
+/** Projects local vertex chains out into full absolute world coordinates. */
 function localToWorld(vertices: Vector[], worldPos: Vector, rotation: number): Vector[] {
   const cos = Math.cos(rotation);
   const sin = Math.sin(rotation);
   return vertices.map(v => new Vector(worldPos.x + v.x * cos - v.y * sin, worldPos.y + v.x * sin + v.y * cos));
 }
 
-/** Convert an Excalibur Color to a CSS rgba string with overridden alpha. */
+/** Translates an Excalibur Color object into standard CSS rgba string format. */
 function colorToRgba(color: Color, alpha: number): string {
   return `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
 }
 
-/** Compute a simple 2D shadow polygon from an occluder's world-space vertices against a light source. */
+/** Computes a 2D shadow volume polygon projecting away from a light source point. */
 function shadowPolygon(lightScreen: Vector, occluderVerts: Vector[], engine: Engine, reach: number): Vector[] {
   const screenVerts = occluderVerts.map(v => worldToScreen(v, engine));
 
@@ -76,7 +71,7 @@ function shadowPolygon(lightScreen: Vector, occluderVerts: Vector[], engine: Eng
   return [screenVerts[minIdx], farMin, farMax, screenVerts[maxIdx]];
 }
 
-/** Compute the shadow wedge for a circular occluder. */
+/** Renders a circular profile occlusion shadow block masking light distribution. */
 function drawShadowCircle(
   ctx: CanvasRenderingContext2D,
   lightScreen: Vector,
@@ -125,10 +120,10 @@ function drawShadowCircle(
   ctx.fill();
 }
 
-// ---------------------------------------------------------------------------
-// LightingSystem Implementation
-// ---------------------------------------------------------------------------
-
+/**
+ * Composite canvas-driven visibility system tracking ambient, darkness,
+ * light masks, and ray projected shadow volumes.
+ */
 export class LightingSystem extends System {
   readonly systemType = SystemType.Update;
 
@@ -209,7 +204,6 @@ export class LightingSystem extends System {
         this.lightingCanvas.width = w;
         this.lightingCanvas.height = h;
 
-        // 2. Safely tell the ScreenElement's graphic compiler to match the dimensions
         if (this.lightingEntity.graphics.current) {
           this.lightingEntity.graphics.current.width = w;
           this.lightingEntity.graphics.current.height = h;
@@ -283,22 +277,12 @@ export class LightingSystem extends System {
 
     ctx.clearRect(0, 0, w, h);
 
-    // ------------------------------------------------------------------
-    // 1. Read ambient settings
-    // ------------------------------------------------------------------
     let ambientIntensity = 0.05;
     for (const e of this.ambientQuery.entities) {
       const a = e.get(AmbientLightComponent)!;
-      if (a.enabled) {
-        ambientIntensity = a.intensity;
-      } else {
-        ambientIntensity = 0; // If ambient light component is disabled, floor it to absolute 0
-      }
+      ambientIntensity = a.enabled ? a.intensity : 0;
     }
 
-    // ------------------------------------------------------------------
-    // 2. Draw INDEPENDENT darkness rectangles & gather their bounds
-    // ------------------------------------------------------------------
     const roomClips: { x: number; y: number; w: number; h: number }[] = [];
 
     for (const e of this.darknessXfQuery.entities) {
@@ -330,9 +314,6 @@ export class LightingSystem extends System {
       ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
     }
 
-    // ------------------------------------------------------------------
-    // 3. Camera AABB for light culling
-    // ------------------------------------------------------------------
     const camPos = camera.pos;
     const halfW = w / 2 / effectiveZoom + this.cullPadding;
     const halfH = h / 2 / effectiveZoom + this.cullPadding;
@@ -344,22 +325,20 @@ export class LightingSystem extends System {
     const inCameraView = (worldPos: Vector, radius: number) =>
       worldPos.x + radius > camMinX && worldPos.x - radius < camMaxX && worldPos.y + radius > camMinY && worldPos.y - radius < camMaxY;
 
-    // ------------------------------------------------------------------
-    // 4. Collect visible occluders
-    // ------------------------------------------------------------------
-    type PolyOccluder = { kind: "poly"; verts: Vector[] };
-    type CircleOccluder = { kind: "circle"; center: Vector; radius: number };
-    type Occluder = PolyOccluder | CircleOccluder;
-
     const occluders: Occluder[] = [];
     for (const e of this.occluderXfQuery.entities) {
       const comp = e.get(LightOccluderComponent)!;
       if (!comp.castShadows) continue;
       const xf = e.get(TransformComponent)!;
+
       if (comp.shape.kind === "circle") {
+        const cos = Math.cos(xf.rotation);
+        const sin = Math.sin(xf.rotation);
+        const rotatedOffset = new Vector(comp.offset.x * cos - comp.offset.y * sin, comp.offset.x * sin + comp.offset.y * cos);
+
         occluders.push({
           kind: "circle",
-          center: xf.pos,
+          center: xf.pos.add(rotatedOffset),
           radius: comp.shape.radius,
         });
       } else {
@@ -370,9 +349,6 @@ export class LightingSystem extends System {
       }
     }
 
-    // ------------------------------------------------------------------
-    // 5. Draw each visible light restricted to its container room
-    // ------------------------------------------------------------------
     const drawLight = (screenPos: Vector, screenRadius: number, alpha: number, drawShape: (c: CanvasRenderingContext2D) => void) => {
       if (!this.offscreenCTX || !this.offscreen) return;
       this.offscreenCTX.clearRect(0, 0, w, h);
@@ -409,10 +385,9 @@ export class LightingSystem extends System {
       ctx.restore();
     };
 
-    // --- Point lights ---
     for (const e of this.pointXfQuery.entities) {
       const light = e.get(PointLightComponent)!;
-      if (!light.enabled) continue; // <-- ADDED
+      if (!light.enabled) continue;
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
 
@@ -432,10 +407,9 @@ export class LightingSystem extends System {
       });
     }
 
-    // --- Cone lights ---
     for (const e of this.coneXfQuery.entities) {
       const light = e.get(ConeLightComponent)!;
-      if (!light.enabled) continue; // <-- ADDED
+      if (!light.enabled) continue;
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
 
@@ -448,14 +422,13 @@ export class LightingSystem extends System {
       const endAngle = dir + halfAngle;
 
       drawLight(screenPos, screenRadius, alpha, c => {
-        // Determine where the light begins to fall off based on softness (e.g., 0.25 softness = starts fading at 75% radius)
         const softEdgeStart = Math.max(0, 1 - light.softness);
 
         const grad = c.createRadialGradient(screenPos.x, screenPos.y, 0, screenPos.x, screenPos.y, screenRadius);
         grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
         grad.addColorStop(softEdgeStart * 0.7, `rgba(255,255,255,${alpha * 0.5})`);
         grad.addColorStop(softEdgeStart, `rgba(255,255,255,${alpha * 0.2})`);
-        grad.addColorStop(1, "rgba(255,255,255,0)"); // Smooth falloff to the very tip of the radius bounds
+        grad.addColorStop(1, "rgba(255,255,255,0)");
 
         c.fillStyle = grad;
         c.beginPath();
@@ -466,12 +439,9 @@ export class LightingSystem extends System {
       });
     }
 
-    // ------------------------------------------------------------------
-    // 6. Colored light tint pass
-    // ------------------------------------------------------------------
     for (const e of this.pointXfQuery.entities) {
       const light = e.get(PointLightComponent)!;
-      if (!light.enabled) continue; // <-- ADDED
+      if (!light.enabled) continue;
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
       if (light.color.equal(Color.White)) continue;
@@ -506,7 +476,7 @@ export class LightingSystem extends System {
 
     for (const e of this.coneXfQuery.entities) {
       const light = e.get(ConeLightComponent)!;
-      if (!light.enabled) continue; // <-- ADDED
+      if (!light.enabled) continue;
       const xf = e.get(TransformComponent)!;
       if (!inCameraView(xf.pos, light.radius)) continue;
       if (light.color.equal(Color.White)) continue;

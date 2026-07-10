@@ -2,15 +2,12 @@ import { System, SystemType, World, Query } from "excalibur";
 import { PointLightComponent, ConeLightComponent } from "./LightingComponents";
 
 /**
- * FlickerSystem
- *
- * Runs every tick (before LightingSystem draws).
- * Modulates `currentIntensity` on PointLightComponent and ConeLightComponent
- * using layered sine waves so lights feel organic without any draw calls.
+ * Modulates active light intensities ahead of the lighting render pass
+ * utilizing deterministic layered sine waves.
  */
 export class FlickerSystem extends System {
   readonly systemType = SystemType.Update;
-  readonly priority = 50; // before LightingSystem (which draws at postdraw time)
+  readonly priority = 50;
 
   private pointQuery!: Query<typeof PointLightComponent>;
   private coneQuery!: Query<typeof ConeLightComponent>;
@@ -22,13 +19,12 @@ export class FlickerSystem extends System {
   }
 
   update(delta: number): void {
-    this.elapsed += delta / 1000; // convert ms → seconds
+    this.elapsed += delta / 1000;
     const t = this.elapsed;
 
     for (const entity of this.pointQuery.entities) {
       const light = entity.get(PointLightComponent)!;
 
-      // If disabled, force intensity to 0 and skip flicker tracking
       if (!light.enabled) {
         light.currentIntensity = 0;
         continue;
@@ -38,21 +34,29 @@ export class FlickerSystem extends System {
         light.currentIntensity = light.intensity;
         continue;
       }
+
       const { speed, amplitude, secondarySpeed } = light.flicker;
       let offset = Math.sin(t * speed * Math.PI * 2) * amplitude;
       if (secondarySpeed) {
         offset += Math.sin(t * secondarySpeed * Math.PI * 2) * amplitude * 0.4;
-        offset /= 1.4; // normalize so total range stays within amplitude
+        offset /= 1.4;
       }
       light.currentIntensity = Math.max(0, light.intensity + offset);
     }
 
     for (const entity of this.coneQuery.entities) {
       const light = entity.get(ConeLightComponent)!;
+
+      if (!light.enabled) {
+        light.currentIntensity = 0;
+        continue;
+      }
+
       if (!light.flicker) {
         light.currentIntensity = light.intensity;
         continue;
       }
+
       const { speed, amplitude, secondarySpeed } = light.flicker;
       let offset = Math.sin(t * speed * Math.PI * 2) * amplitude;
       if (secondarySpeed) {

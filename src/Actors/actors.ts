@@ -44,6 +44,7 @@ export class Crate extends Actor {
     this.occluder = new LightOccluderComponent(
       { kind: "box", width: 29, height: 36 },
       true, // castShadows
+      vec(-10, -10),
     );
     this.addComponent(this.occluder);
   }

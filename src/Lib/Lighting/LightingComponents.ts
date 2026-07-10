@@ -1,128 +1,131 @@
 import { Component, Color, Vector } from "excalibur";
 
-// ---------------------------------------------------------------------------
-// DarknessComponent
-// Attach to a single "world" actor (or the scene itself via a singleton actor).
-// Controls the global darkness veil drawn over the entire scene.
-// ---------------------------------------------------------------------------
+/**
+ * Controls the global darkness veil drawn over a scene or room.
+ * Attach this to a single world entity or room manager.
+ */
 export class DarknessComponent extends Component {
   readonly type = "Darkness";
 
   constructor(
     public color: Color = Color.fromRGB(0, 0, 10),
-    public intensity: number = 0.85, // 0 = no darkness, 1 = pitch black
-    /** Width of the darkness region in world-space pixels (match your room actor) */
+    public intensity: number = 0.85,
+    /** Width of the darkness boundary in world pixels. Set to Infinity for global coverage. */
     public width: number = Infinity,
-    /** Height of the darkness region in world-space pixels (match your room actor) */
+    /** Height of the darkness boundary in world pixels. Set to Infinity for global coverage. */
     public height: number = Infinity,
   ) {
     super();
   }
 }
 
-// ---------------------------------------------------------------------------
-// AmbientLightComponent
-// Attach to the same world actor as DarknessComponent.
-// Raises the brightness floor uniformly — the darkness is never fully black.
-// ---------------------------------------------------------------------------
+/**
+ * Raises the uniform minimum brightness floor, ensuring absolute darkness is never pitch black.
+ */
 export class AmbientLightComponent extends Component {
   readonly type = "AmbientLight";
 
   constructor(
     public color: Color = Color.White,
-    public intensity: number = 0.05, // 0 = no ambient, 1 = fully lit
-    public enabled: boolean = true, // <-- ADDED
+    public intensity: number = 0.05,
+    public enabled: boolean = true,
   ) {
     super();
   }
 }
 
-// ---------------------------------------------------------------------------
-// PointLightComponent
-// Attach to any actor. The light origin tracks the actor's world position.
-// ---------------------------------------------------------------------------
 export interface FlickerOptions {
-  /** Frequency of the flicker oscillation in Hz */
+  /** Frequency of the flicker oscillation in Hz. */
   speed: number;
-  /** Max deviation from base intensity (0–1). 0.3 = ±30% */
+  /** Maximum deviation from base intensity (0.0 to 1.0). */
   amplitude: number;
-  /** Add a second sine at a different freq for organic feel */
+  /** Optional secondary wave frequency for asymmetrical, organic modulation. */
   secondarySpeed?: number;
 }
 
+/**
+ * Emits light uniformly in all directions from the parent entity's position.
+ */
 export class PointLightComponent extends Component {
   readonly type = "PointLight";
-
-  /** Runtime-computed intensity after flicker is applied (written by FlickerSystem) */
+  /** Runtime intensity after flicker calculations are applied. */
   currentIntensity: number;
 
   constructor(
     public color: Color = Color.White,
     public intensity: number = 1.0,
-    public radius: number = 150, // world-space pixels
+    public radius: number = 150,
     public flicker?: FlickerOptions,
-    public enabled: boolean = true, // <-- ADDED
+    public enabled: boolean = true,
   ) {
     super();
     this.currentIntensity = intensity;
   }
 }
 
-// ---------------------------------------------------------------------------
-// ConeLightComponent
-// Like a point light but restricted to an angular wedge.
-// Attach to any actor; direction is in world space (radians, 0 = right).
-// ---------------------------------------------------------------------------
+/**
+ * Emits light restricted to a directional angular wedge.
+ */
 export class ConeLightComponent extends Component {
   readonly type = "ConeLight";
-
+  /** Runtime intensity after flicker calculations are applied. */
   currentIntensity: number;
 
   constructor(
     public color: Color = Color.White,
     public intensity: number = 1.0,
     public radius: number = 200,
-    /** Full cone angle in radians. Math.PI / 4 = 45°, Math.PI / 2 = 90° */
+    /** Total angle arc of the wedge in radians. */
     public angle: number = Math.PI / 3,
-    /** Direction the cone faces, in radians (world space) */
+    /** World-space heading angle in radians (0 = Right). */
     public direction: number = 0,
-    /** 0 = hard edge, 1 = fully soft edge */
+    /** Edge smoothing ratio. 0.0 represents hard cuts, 1.0 represents full dissipation. */
     public softness: number = 0.25,
     public flicker?: FlickerOptions,
-    public enabled: boolean = true, // <-- ADDED
+    public enabled: boolean = true,
   ) {
     super();
     this.currentIntensity = intensity;
   }
 }
 
-// ---------------------------------------------------------------------------
-// LightOccluderComponent
-// Attach to any actor that should cast shadows / block light.
-// The shape is defined in LOCAL space; LightingSystem transforms to world space.
-// ---------------------------------------------------------------------------
 export type OccluderShape =
   | { kind: "box"; width: number; height: number }
   | { kind: "polygon"; vertices: Vector[] }
   | { kind: "circle"; radius: number };
 
+/**
+ * Marks an entity as a light-blocking obstacle that projects dynamic shadows.
+ */
 export class LightOccluderComponent extends Component {
   readonly type = "LightOccluder";
 
   constructor(
     public shape: OccluderShape,
-    /** If false the occluder blocks the canvas gradient but skips shadow polygon calc */
+    /** When false, blocks the canvas light buffer directly but skips shadow volume geometry generation. */
     public castShadows: boolean = true,
+    /** Local space coordinate offset shifting the occluder geometry away from the transform origin. */
+    public offset: Vector = Vector.Zero,
   ) {
     super();
   }
 
-  /** Returns vertices in local space for box/polygon shapes. Returns [] for circles. */
+  /**
+   * Evaluates the bounding shape vertices in local space, factoring in local offsets.
+   * Returns an empty array for circular primitives.
+   */
   localVertices(): Vector[] {
     if (this.shape.kind === "circle") return [];
-    if (this.shape.kind === "polygon") return this.shape.vertices;
-    const hw = this.shape.width / 2;
-    const hh = this.shape.height / 2;
-    return [new Vector(-hw, -hh), new Vector(hw, -hh), new Vector(hw, hh), new Vector(-hw, hh)];
+
+    let baseVerts: Vector[] = [];
+    if (this.shape.kind === "polygon") {
+      baseVerts = this.shape.vertices;
+    } else {
+      const hw = this.shape.width / 2;
+      const hh = this.shape.height / 2;
+      baseVerts = [new Vector(-hw, -hh), new Vector(hw, -hh), new Vector(hw, hh), new Vector(-hw, hh)];
+    }
+
+    return baseVerts.map(v => v.add(this.offset));
   }
 }
