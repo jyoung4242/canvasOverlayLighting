@@ -268,6 +268,10 @@ export class LightingSystem extends System {
   }
 
   private _renderLightingCanvas(ctx: CanvasRenderingContext2D): void {
+    // Add these type aliases right before using them:
+    type PolyOccluder = { kind: "poly"; verts: Vector[] };
+    type CircleOccluder = { kind: "circle"; center: Vector; radius: number };
+    type Occluder = PolyOccluder | CircleOccluder;
     const engine = this.engine;
     const camera = this.scene.camera;
 
